@@ -18,8 +18,20 @@ APPROVAL_PORT=7801
 
 CACHE_FILE="/tmp/clawy-ip-$USER"
 CACHE_TTL=3600  # 1 hour — covers most sessions
+HOST_FILE="$HOME/.clawy/host"
 
 resolve_host() {
+  if [ -n "$CLAWY_HOST" ]; then
+    echo "$CLAWY_HOST"
+    return 0
+  fi
+  if [ -f "$HOST_FILE" ]; then
+    HOST_FROM_FILE=$(head -n 1 "$HOST_FILE" | tr -d '[:space:]')
+    if [ -n "$HOST_FROM_FILE" ]; then
+      echo "$HOST_FROM_FILE"
+      return 0
+    fi
+  fi
   if [ -f "$CACHE_FILE" ]; then
     if [[ "$(uname)" == "Darwin" ]]; then
       CACHE_AGE=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE") ))

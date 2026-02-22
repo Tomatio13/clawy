@@ -1,0 +1,592 @@
+diff --git a/README.md b/README.md
+index b06b23d..f9191b3 100644
+--- a/README.md
++++ b/README.md
+@@ -16,7 +16,7 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
+ 
+ ★ Powered by Claude Code hooks native integration
+ 
+-♥ Runs on an off-the-shelf M5StickC Plus 2
++♥ Runs on M5StickC Plus 2 and M5Stack Core series devices
+ 
+ ◆ Works from any project, Clawy follows your sessions
+ 
+@@ -32,7 +32,7 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
+ 
+ ## What You Need
+ 
+-- **M5StickC Plus 2** (~$20) — [M5Stack store](https://shop.m5stack.com/products/m5stickc-plus2-esp32-mini-iot-development-kit)
++- **M5 device**: M5StickC Plus 2 or M5Stack Core series
+ - **Claude Code** installed and working
+ - **USB cable** (USB-C, data-capable)
+ 
+@@ -40,7 +40,7 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
+ 
+ ### Path A: Flash from Browser (Recommended)
+ 
+-1. Plug in the M5StickC Plus 2 via USB
++1. Plug in your M5 device via USB
+ 2. Visit the [web flasher](https://clawy.lol/flash) in Chrome or Edge
+ 3. Click **Install Clawy** and select the serial port
+ 4. Enter your WiFi credentials on the flash page (sent directly to the device over USB, never leaves your computer)
+@@ -71,8 +71,10 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
+    ```
+ 3. Compile and upload:
+    ```bash
++   # Example (M5StickC Plus 2):
+    arduino-cli compile -b m5stack:esp32:m5stack_stickc_plus2 firmware/clawy/
+    arduino-cli upload -b m5stack:esp32:m5stack_stickc_plus2 -p /dev/cu.usbserial-* firmware/clawy/
++   # For M5Stack Core models, use that board's FQBN instead.
+    ```
+ 4. Install hooks:
+    ```bash
+@@ -105,15 +107,15 @@ The device advertises itself as `clawy.local` via mDNS. No IP configuration need
+ ### Physical Buttons
+ 
+ - **Button A**: Approve permission requests, skip boot animation
+-- **Button B**: Deny permission requests, toggle stats screen
+-- **Button B (long press)**: Enter demo mode
+-- **Button A + B (hold during boot)**: Reset WiFi credentials
++- **Button B/C**: Deny permission requests, toggle stats screen
++- **Button B/C (long press)**: Enter demo mode
++- **Button A + (B or C) (hold during boot)**: Reset WiFi credentials
+ 
+ ## WiFi Setup
+ 
+ If you flashed via the [web flasher](https://clawy.lol/flash), enter your WiFi credentials on the setup page after flashing. If you built from source, either add credentials to `secrets.h` or the device will enter provisioning mode on first boot.
+ 
+-To reset WiFi, hold both buttons (A + B) during boot.
++To reset WiFi, hold A and one secondary button (B or C) during boot.
+ 
+ ## Uninstall
+ 
+@@ -127,7 +129,7 @@ This removes the hooks from Claude Code settings and deletes `~/.clawy/`. If you
+ 
+ ```
+ clawy/
+-├── firmware/clawy/     Arduino sketch (M5StickC Plus 2)
++├── firmware/clawy/     Arduino sketch (M5StickC Plus 2 / M5Stack Core)
+ ├── hooks/              Claude Code hook scripts
+ ├── assets/             Sprite exports and assets
+ ├── install.sh          Hook installer
+@@ -161,7 +163,7 @@ Clawy communicates over plaintext TCP on your local network. The approval port (
+ 
+ ## Requirements
+ 
+-- **Device**: M5StickC Plus 2 (ESP32-PICO, 135x240 TFT, WiFi)
++- **Device**: M5StickC Plus 2 or M5Stack Core series
+ - **Build tools** (Path B only): Arduino CLI with `m5stack:esp32` core, M5Unified + M5GFX libraries
+ - **OS**: macOS or Linux (hooks use bash + python3)
+ 
+diff --git a/firmware/clawy/clawy.ino b/firmware/clawy/clawy.ino
+index 4817f6d..17f2473 100644
+--- a/firmware/clawy/clawy.ino
++++ b/firmware/clawy/clawy.ino
+@@ -1,5 +1,5 @@
+ // Clawy — JRPG companion for Claude Code sessions
+-// Animated pixel art fox/cat on M5StickC Plus 2 (135x240 color TFT)
++// Animated pixel art fox/cat on M5 devices (StickC Plus 2 / Core series)
+ // Driven by Claude Code hooks over WiFi
+ 
+ #define FIRMWARE_VERSION "0.1.1-beta"
+@@ -20,9 +20,14 @@
+ #define IDLE_SLEEP_MS 30000 // idle → sleeping after 30s
+ #define BLINK_INTERVAL 4000 // blink every ~4 seconds
+ 
+-#define DIM_TIMEOUT_MS   15000  // dim after 15s no state change
++#define DIM_TIMEOUT_MS   15000  // currently unused (auto-dim disabled)
++#if CLAWY_PROFILE_CORE
++#define BRIGHTNESS_ACTIVE 96
++#define BRIGHTNESS_DIM    60
++#else
+ #define BRIGHTNESS_ACTIVE 80
+-#define BRIGHTNESS_DIM    20
++#define BRIGHTNESS_DIM    45
++#endif
+ 
+ // ============================================================
+ // State
+@@ -70,6 +75,12 @@ static uint8_t linePos = 0;
+ static unsigned long lineLastByte = 0;
+ 
+ static M5Canvas canvas(&M5.Display);
++static bool spriteReady = false;
++
++static inline bool sleepFeatureEnabled() {
++  // Core profile keeps full-bright idle to avoid apparent black-screen issues.
++  return !CLAWY_PROFILE_CORE;
++}
+ 
+ // ============================================================
+ // State helpers
+@@ -95,10 +106,8 @@ int getBatteryPercent() {
+ }
+ 
+ void wakeDisplay() {
+-  if (isDimmed) {
+-    M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
+-    isDimmed = false;
+-  }
++  M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
++  isDimmed = false;
+   lastStateChange = millis();
+ }
+ 
+@@ -206,6 +215,8 @@ void drawParticles(M5Canvas& cv, uint8_t f, uint16_t color) {
+ // ============================================================
+ 
+ void renderFrame() {
++  if (!spriteReady) return;
++
+   uint16_t accent = isSleeping ? COL_DIM_GRAY : stateColor(currentStatus);
+   int battPct = getBatteryPercent();
+ 
+@@ -425,6 +436,11 @@ void processLine(const char* line) {
+ // ============================================================
+ 
+ void checkIdleProgression() {
++  if (!sleepFeatureEnabled()) {
++    isSleeping = false;
++    return;
++  }
++
+   unsigned long elapsed = millis() - statusStart;
+ 
+   // Blink trigger (READY only)
+@@ -446,25 +462,49 @@ void checkIdleProgression() {
+ // ============================================================
+ 
+ void checkAutoDim() {
+-  if (isDimmed) return;
+-  if (millis() - lastStateChange >= DIM_TIMEOUT_MS) {
+-    M5.Display.setBrightness(BRIGHTNESS_DIM);
+-    isDimmed = true;
+-  }
++  // Disabled on Core for now because dim/recover behavior is unstable on some units.
++  (void)DIM_TIMEOUT_MS;
++  (void)BRIGHTNESS_DIM;
+ }
+ 
+ // ============================================================
+ // Button handling
+ // ============================================================
+ 
++static inline bool wasSecondaryClicked() {
++  return M5.BtnB.wasClicked() || M5.BtnC.wasClicked();
++}
++
++static inline bool wasSecondaryHold() {
++  return M5.BtnB.wasHold() || M5.BtnC.wasHold();
++}
++
++static inline bool isSecondaryPressed() {
++  return M5.BtnB.isPressed() || M5.BtnC.isPressed();
++}
++
+ void checkButtons() {
+-  // Demo mode buttons: A advances, B exits
++  bool anyPressed = M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnC.isPressed();
++
++  // Wake on any physical button press, even before click/hold state updates settle.
++  if (anyPressed) {
++    bool wasSleeping = isSleeping;
++    wakeDisplay();
++    if (wasSleeping) {
++      isSleeping = false;
++      statusStart = millis();
++      frame = 0;
++      renderFrame();
++    }
++  }
++
++  // Demo mode buttons: A advances, secondary button (B/C) exits
+   if (demoMode) {
+     if (M5.BtnA.wasClicked()) {
+       wakeDisplay();
+       demoAdvance();
+     }
+-    if (M5.BtnB.wasClicked() || M5.BtnB.wasHold()) {
++    if (wasSecondaryClicked() || wasSecondaryHold()) {
+       wakeDisplay();
+       demoExit();
+     }
+@@ -481,15 +521,15 @@ void checkButtons() {
+     return;
+   }
+ 
+-  // Button B long press: enter demo mode (except during APPROVE)
+-  if (!isStatus("APPROVE") && M5.BtnB.wasHold()) {
++  // Secondary button long press: enter demo mode (except during APPROVE)
++  if (!isStatus("APPROVE") && wasSecondaryHold()) {
+     wakeDisplay();
+     demoEnter();
+     return;
+   }
+ 
+-  // Button B click: deny (in APPROVE state) OR toggle stats
+-  if (M5.BtnB.wasClicked()) {
++  // Secondary button click (B/C): deny (in APPROVE state) OR toggle stats
++  if (wasSecondaryClicked()) {
+     wakeDisplay();
+     if (isStatus("APPROVE")) {
+       Serial.println("BUTTON:DENY");
+@@ -520,21 +560,48 @@ void setup() {
+ 
+   Serial.begin(115200);
+ 
+-  // Button B hold threshold for demo mode entry
++  // Secondary buttons hold threshold for demo mode entry
+   M5.BtnB.setHoldThresh(2000);
++  M5.BtnC.setHoldThresh(2000);
+ 
+   // Display setup
+-  M5.Display.setRotation(0);  // Portrait
++#if CLAWY_PROFILE_CORE
++  M5.Display.setRotation(1);  // Landscape for M5Core family
++#else
++  M5.Display.setRotation(0);  // Portrait for M5StickC Plus 2
++#endif
+   M5.Display.fillScreen(COL_BLACK);
+   M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
+ 
+   // Create full-screen sprite for flicker-free rendering
+-  canvas.createSprite(SCREEN_W, SCREEN_H);
++  canvas.setColorDepth(16);
++  canvas.setPsram(true);
++  spriteReady = canvas.createSprite(SCREEN_W, SCREEN_H);
++
++  // Fallback for boards without PSRAM / tight heap
++  if (!spriteReady) {
++    canvas.setPsram(false);
++    canvas.setColorDepth(8);
++    spriteReady = canvas.createSprite(SCREEN_W, SCREEN_H);
++  }
++
+   canvas.setSwapBytes(true);
+ 
+-  // Check for WiFi reset: hold both buttons during boot
++  if (!spriteReady) {
++    M5.Display.setTextDatum(middle_center);
++    M5.Display.setTextColor(COL_RED);
++    M5.Display.setFont(&fonts::Font2);
++    M5.Display.drawString("Display init failed", SCREEN_W / 2, SCREEN_H / 2 - 8);
++    M5.Display.setTextColor(COL_HUD_GRAY);
++    M5.Display.setFont(&fonts::Font0);
++    M5.Display.drawString("Reboot device", SCREEN_W / 2, SCREEN_H / 2 + 10);
++    Serial.println("ERROR: sprite allocation failed");
++    return;
++  }
++
++  // Check for WiFi reset: hold A + secondary button during boot
+   M5.update();
+-  if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
++  if (M5.BtnA.isPressed() && isSecondaryPressed()) {
+     nvsClearWiFiCreds();
+     // Show reset message briefly
+     canvas.fillSprite(COL_BLACK);
+diff --git a/firmware/clawy/display.h b/firmware/clawy/display.h
+index 23e6b6a..c0ccdb1 100644
+--- a/firmware/clawy/display.h
++++ b/firmware/clawy/display.h
+@@ -3,11 +3,54 @@
+ #include "sprites.h"
+ 
+ // ============================================================
+-// Display: 135x240 TFT, portrait orientation
++// Display: dynamic size (supports M5StickC Plus 2 and M5Stack Core series)
+ // ============================================================
+ 
+-#define SCREEN_W 135
+-#define SCREEN_H 240
++#if defined(ARDUINO_M5STACK_CORE) || defined(ARDUINO_M5STACK_CORE2) || defined(ARDUINO_M5STACK_CORES3)
++#define CLAWY_PROFILE_CORE 1
++#else
++#define CLAWY_PROFILE_CORE 0
++#endif
++
++#define SCREEN_W ((int16_t)M5.Display.width())
++#define SCREEN_H ((int16_t)M5.Display.height())
++
++static inline int16_t layoutWidth() {
++#if CLAWY_PROFILE_CORE
++  int16_t w = SCREEN_W - 20;
++  if (w > 304) w = 304;
++  if (w < 240) w = SCREEN_W - 12;
++  return w;
++#else
++  int16_t w = SCREEN_W - 8;
++  if (w < 120) w = SCREEN_W;
++  if (w > 220) w = 220;
++  return w;
++#endif
++}
++
++static inline int16_t frameHeight() {
++#if CLAWY_PROFILE_CORE
++  int16_t h = 126;
++  if (h > SCREEN_H - 90) h = SCREEN_H - 90;
++  if (h < 98) h = 98;
++  return h;
++#else
++  int16_t h = SCREEN_H / 3;
++  if (h < 82) h = 82;
++  if (h > 110) h = 110;
++  return h;
++#endif
++}
++
++static inline int16_t textBoxHeight() {
++#if CLAWY_PROFILE_CORE
++  return 62;
++#else
++  int16_t h = (SCREEN_H >= 300) ? 48 : 40;
++  return h;
++#endif
++}
+ 
+ // Layout zones (JRPG portrait + text window layout)
+ #define HUD_Y       0
+@@ -15,30 +58,64 @@
+ #define DIVIDER_Y   17
+ 
+ // Portrait frame area
+-#define FRAME_X     4
++#define FRAME_X     ((SCREEN_W - FRAME_W) / 2)
++#if CLAWY_PROFILE_CORE
++#define FRAME_Y     26
++#else
+ #define FRAME_Y     22
+-#define FRAME_W     127
+-#define FRAME_H     82
++#endif
++#define FRAME_W     (layoutWidth())
++#define FRAME_H     (frameHeight())
+ 
+ // Character position (centered in portrait frame)
+-#define CHAR_CX     67
+-#define CHAR_CY     (FRAME_Y + 6 + SPRITE_H / 2)
+-#define CHAR_X      (CHAR_CX - SPRITE_W / 2)
+-#define CHAR_Y      (FRAME_Y + 6)
++#if CLAWY_PROFILE_CORE
++#define SPRITE_SCALE 2
++#else
++#define SPRITE_SCALE 1
++#endif
++#define CHAR_W      (SPRITE_W * SPRITE_SCALE)
++#define CHAR_H      (SPRITE_H * SPRITE_SCALE)
++#define CHAR_CX     (FRAME_X + FRAME_W / 2)
++#define CHAR_CY     (FRAME_Y + FRAME_H / 2)
++#define CHAR_X      (CHAR_CX - CHAR_W / 2)
++#define CHAR_Y      (CHAR_CY - CHAR_H / 2)
+ 
+ // Text window area
+-#define TBOX_X      4
+-#define TBOX_Y      108
+-#define TBOX_W      127
+-#define TBOX_H      40
++#define TBOX_X      FRAME_X
++#define TBOX_Y      (FRAME_Y + FRAME_H + 4)
++#define TBOX_W      FRAME_W
++#define TBOX_H      (textBoxHeight())
+ 
+ // Text positions inside text window
+-#define STATUS_Y    120
+-#define DETAIL_Y    138
++#if CLAWY_PROFILE_CORE
++#define STATUS_Y    (TBOX_Y + 23)
++#define DETAIL_Y    (TBOX_Y + 48)
++#else
++#define STATUS_Y    (TBOX_Y + 12)
++#define DETAIL_Y    (TBOX_Y + 30)
++#endif
+ 
+ // Button bar
+-#define BTN_Y       210
++#if CLAWY_PROFILE_CORE
++#define BTN_H       28
++#define BTN_Y       (SCREEN_H - BTN_H - 6)
++#else
+ #define BTN_H       24
++#define BTN_Y       (SCREEN_H - BTN_H - 6)
++#endif
++
++static inline int16_t qscrollHeight() {
++  int16_t top = TBOX_Y + TBOX_H + 8;
++  int16_t h = BTN_Y - top - 4;
++#if CLAWY_PROFILE_CORE
++  if (h < 20) h = 20;
++  if (h > 40) h = 40;
++#else
++  if (h < 32) h = 32;
++  if (h > 72) h = 72;
++#endif
++  return h;
++}
+ 
+ // ============================================================
+ // Color palette (RGB565)
+@@ -139,7 +216,13 @@ void drawSpriteTinted(M5Canvas& canvas, const uint8_t* bitmap, int16_t x, int16_
+       int bitIdx = 7 - (col % 8);
+       uint8_t b = pgm_read_byte(&bitmap[byteIdx]);
+       if (b & (1 << bitIdx)) {
+-        canvas.drawPixel(x + col, y + row, color);
++        int16_t px = x + col * SPRITE_SCALE;
++        int16_t py = y + row * SPRITE_SCALE;
++        if (SPRITE_SCALE == 1) {
++          canvas.drawPixel(px, py, color);
++        } else {
++          canvas.fillRect(px, py, SPRITE_SCALE, SPRITE_SCALE, color);
++        }
+       }
+     }
+   }
+@@ -286,7 +369,11 @@ void drawTextWindow(M5Canvas& canvas, uint16_t accent) {
+ void drawStatusText(M5Canvas& canvas, const char* text, uint16_t color) {
+   canvas.setTextColor(color);
+   canvas.setTextSize(1);
++#if CLAWY_PROFILE_CORE
++  canvas.setFont(&fonts::FreeSansBold12pt7b);
++#else
+   canvas.setFont(&fonts::Font2);
++#endif
+   canvas.setTextDatum(middle_center);
+   canvas.drawString(text, SCREEN_W / 2, STATUS_Y);
+ }
+@@ -294,7 +381,11 @@ void drawStatusText(M5Canvas& canvas, const char* text, uint16_t color) {
+ void drawDetailText(M5Canvas& canvas, const char* text, uint16_t color) {
+   canvas.setTextColor(color);
+   canvas.setTextSize(1);
++#if CLAWY_PROFILE_CORE
++  canvas.setFont(&fonts::FreeSans9pt7b);
++#else
+   canvas.setFont(&fonts::Font0);
++#endif
+   canvas.setTextDatum(middle_center);
+   canvas.drawString(text, SCREEN_W / 2, DETAIL_Y);
+ }
+@@ -304,7 +395,11 @@ void drawDetailText(M5Canvas& canvas, const char* text, uint16_t color) {
+ // ============================================================
+ 
+ void drawButtonBar(M5Canvas& canvas) {
+-  int btnW = 58;
++#if CLAWY_PROFILE_CORE
++  int btnW = 90;
++#else
++  int btnW = (SCREEN_W >= 200) ? 68 : 58;
++#endif
+   int gap = 5;
+   int totalW = btnW * 2 + gap;
+   int startX = (SCREEN_W - totalW) / 2;
+@@ -318,7 +413,8 @@ void drawButtonBar(M5Canvas& canvas) {
+ 
+   canvas.drawRoundRect(startX + btnW + gap, BTN_Y, btnW, BTN_H, 4, COL_RED);
+   canvas.setTextColor(COL_RED);
+-  canvas.drawString("B: Nope", startX + btnW + gap + btnW / 2, BTN_Y + BTN_H / 2);
++  const char* denyLabel = (SCREEN_W >= 200) ? "B/C: Nope" : "B: Nope";
++  canvas.drawString(denyLabel, startX + btnW + gap + btnW / 2, BTN_Y + BTN_H / 2);
+ }
+ 
+ // ============================================================
+@@ -497,8 +593,8 @@ void drawSparkle(M5Canvas& canvas, int16_t x, int16_t y, uint16_t color) {
+ }
+ 
+ void drawSparkles(M5Canvas& canvas, uint8_t frame, uint16_t color) {
+-  const int16_t sx[] = { CHAR_X - 6, CHAR_X + SPRITE_W + 4, CHAR_X + 12, CHAR_X + SPRITE_W - 8 };
+-  const int16_t sy[] = { CHAR_Y + 12, CHAR_Y + 8, CHAR_Y - 4, CHAR_Y + SPRITE_H - 8 };
++  const int16_t sx[] = { CHAR_X - 6, CHAR_X + CHAR_W + 4, CHAR_X + 12, CHAR_X + CHAR_W - 8 };
++  const int16_t sy[] = { CHAR_Y + 12, CHAR_Y + 8, CHAR_Y - 4, CHAR_Y + CHAR_H - 8 };
+   for (int i = 0; i < 4; i++) {
+     if ((frame + i) % 3 != 0 && inFrame(sx[i], sy[i])) {
+       drawSparkle(canvas, sx[i], sy[i], color);
+@@ -521,7 +617,7 @@ void drawThoughtDots(M5Canvas& canvas, uint8_t frame, uint16_t color) {
+ 
+ void drawDustPuffs(M5Canvas& canvas, uint8_t frame, uint16_t color) {
+   int16_t baseX = CHAR_X - 4;
+-  int16_t baseY = CHAR_Y + SPRITE_H - 8;
++  int16_t baseY = CHAR_Y + CHAR_H - 8;
+   for (int i = 0; i < 3; i++) {
+     int16_t x = baseX - (frame % 4) * 2 - i * 6;
+     int16_t y = baseY + ((i + frame) % 3) - 1;
+@@ -533,7 +629,7 @@ void drawDustPuffs(M5Canvas& canvas, uint8_t frame, uint16_t color) {
+ }
+ 
+ void drawBouncingQuestion(M5Canvas& canvas, uint8_t frame, uint16_t color) {
+-  int16_t x = CHAR_X + SPRITE_W + 4;
++  int16_t x = CHAR_X + CHAR_W + 4;
+   int bounce[] = {0, -2, -4, -5, -4, -2, 0, 1};
+   int16_t y = CHAR_Y + 12 + bounce[frame % 8];
+   if (inFrame(x, y)) {
+@@ -546,7 +642,7 @@ void drawBouncingQuestion(M5Canvas& canvas, uint8_t frame, uint16_t color) {
+ }
+ 
+ void drawPulsingBang(M5Canvas& canvas, uint8_t frame, uint16_t color) {
+-  int16_t x = CHAR_X + SPRITE_W + 4;
++  int16_t x = CHAR_X + CHAR_W + 4;
+   int16_t y = CHAR_Y + 14;
+   if ((frame % 4) < 2 && inFrame(x, y)) {
+     canvas.setTextColor(color);
+@@ -654,10 +750,10 @@ int drawWrappedText(M5Canvas& cv, const char* text, int16_t x, int16_t y,
+ // ============================================================
+ 
+ // Quest scroll layout
+-#define QSCROLL_X     8
+-#define QSCROLL_Y     152
+-#define QSCROLL_W     119
+-#define QSCROLL_H     53
++#define QSCROLL_X      (TBOX_X + 4)
++#define QSCROLL_Y      (TBOX_Y + TBOX_H + 8)
++#define QSCROLL_W      (TBOX_W - 8)
++#define QSCROLL_H      (qscrollHeight())
+ #define QSCROLL_LINE_H  10
+ #define QSCROLL_PAD      4
+ #define QSCROLL_VISIBLE  ((QSCROLL_H - QSCROLL_PAD * 2) / QSCROLL_LINE_H)  // 4 lines
+diff --git a/hooks/permission-listener.sh b/hooks/permission-listener.sh
+index 2428c1e..0cb2093 100755
+--- a/hooks/permission-listener.sh
++++ b/hooks/permission-listener.sh
+@@ -18,8 +18,20 @@ APPROVAL_PORT=7801
+ 
+ CACHE_FILE="/tmp/clawy-ip-$USER"
+ CACHE_TTL=3600  # 1 hour — covers most sessions
++HOST_FILE="$HOME/.clawy/host"
+ 
+ resolve_host() {
++  if [ -n "$CLAWY_HOST" ]; then
++    echo "$CLAWY_HOST"
++    return 0
++  fi
++  if [ -f "$HOST_FILE" ]; then
++    HOST_FROM_FILE=$(head -n 1 "$HOST_FILE" | tr -d '[:space:]')
++    if [ -n "$HOST_FROM_FILE" ]; then
++      echo "$HOST_FROM_FILE"
++      return 0
++    fi
++  fi
+   if [ -f "$CACHE_FILE" ]; then
+     if [[ "$(uname)" == "Darwin" ]]; then
+       CACHE_AGE=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE") ))
+diff --git a/hooks/send-status.sh b/hooks/send-status.sh
+index 86b2144..73a1062 100755
+--- a/hooks/send-status.sh
++++ b/hooks/send-status.sh
+@@ -14,8 +14,20 @@ MESSAGE="$2"
+ 
+ CACHE_FILE="/tmp/clawy-ip-$USER"
+ CACHE_TTL=3600  # 1 hour — covers most sessions
++HOST_FILE="$HOME/.clawy/host"
+ 
+ resolve_host() {
++  if [ -n "$CLAWY_HOST" ]; then
++    echo "$CLAWY_HOST"
++    return 0
++  fi
++  if [ -f "$HOST_FILE" ]; then
++    HOST_FROM_FILE=$(head -n 1 "$HOST_FILE" | tr -d '[:space:]')
++    if [ -n "$HOST_FROM_FILE" ]; then
++      echo "$HOST_FROM_FILE"
++      return 0
++    fi
++  fi
+   if [ -f "$CACHE_FILE" ]; then
+     if [[ "$(uname)" == "Darwin" ]]; then
+       CACHE_AGE=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE") ))

@@ -16,7 +16,7 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
 
 ★ Powered by Claude Code hooks native integration
 
-♥ Runs on an off-the-shelf M5StickC Plus 2
+♥ Runs on M5StickC Plus 2 and M5Stack Core series devices
 
 ◆ Works from any project, Clawy follows your sessions
 
@@ -32,7 +32,7 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
 
 ## What You Need
 
-- **M5StickC Plus 2** (~$20) — [M5Stack store](https://shop.m5stack.com/products/m5stickc-plus2-esp32-mini-iot-development-kit)
+- **M5 device**: M5StickC Plus 2 or M5Stack Core series
 - **Claude Code** installed and working
 - **USB cable** (USB-C, data-capable)
 
@@ -40,7 +40,7 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
 
 ### Path A: Flash from Browser (Recommended)
 
-1. Plug in the M5StickC Plus 2 via USB
+1. Plug in your M5 device via USB
 2. Visit the [web flasher](https://clawy.lol/flash) in Chrome or Edge
 3. Click **Install Clawy** and select the serial port
 4. Enter your WiFi credentials on the flash page (sent directly to the device over USB, never leaves your computer)
@@ -71,8 +71,10 @@ Clawy is built as a cute pixel companion for [Claude Code](https://docs.anthropi
    ```
 3. Compile and upload:
    ```bash
+   # Example (M5StickC Plus 2):
    arduino-cli compile -b m5stack:esp32:m5stack_stickc_plus2 firmware/clawy/
    arduino-cli upload -b m5stack:esp32:m5stack_stickc_plus2 -p /dev/cu.usbserial-* firmware/clawy/
+   # For M5Stack Core models, use that board's FQBN instead.
    ```
 4. Install hooks:
    ```bash
@@ -105,15 +107,15 @@ The device advertises itself as `clawy.local` via mDNS. No IP configuration need
 ### Physical Buttons
 
 - **Button A**: Approve permission requests, skip boot animation
-- **Button B**: Deny permission requests, toggle stats screen
-- **Button B (long press)**: Enter demo mode
-- **Button A + B (hold during boot)**: Reset WiFi credentials
+- **Button B/C**: Deny permission requests, toggle stats screen
+- **Button B/C (long press)**: Enter demo mode
+- **Button A + (B or C) (hold during boot)**: Reset WiFi credentials
 
 ## WiFi Setup
 
 If you flashed via the [web flasher](https://clawy.lol/flash), enter your WiFi credentials on the setup page after flashing. If you built from source, either add credentials to `secrets.h` or the device will enter provisioning mode on first boot.
 
-To reset WiFi, hold both buttons (A + B) during boot.
+To reset WiFi, hold A and one secondary button (B or C) during boot.
 
 ## Uninstall
 
@@ -127,7 +129,7 @@ This removes the hooks from Claude Code settings and deletes `~/.clawy/`. If you
 
 ```
 clawy/
-├── firmware/clawy/     Arduino sketch (M5StickC Plus 2)
+├── firmware/clawy/     Arduino sketch (M5StickC Plus 2 / M5Stack Core)
 ├── hooks/              Claude Code hook scripts
 ├── assets/             Sprite exports and assets
 ├── install.sh          Hook installer
@@ -161,9 +163,16 @@ Clawy communicates over plaintext TCP on your local network. The approval port (
 
 ## Requirements
 
-- **Device**: M5StickC Plus 2 (ESP32-PICO, 135x240 TFT, WiFi)
+- **Device**: M5StickC Plus 2 or M5Stack Core series
 - **Build tools** (Path B only): Arduino CLI with `m5stack:esp32` core, M5Unified + M5GFX libraries
 - **OS**: macOS or Linux (hooks use bash + python3)
+
+## Repro Guide (M5Core)
+
+If you are running on `M5Stack Core` and want a reproducible setup after upstream updates, see:
+
+- `docs/M5CORE_REPRO.md`
+- `docs/patches/m5core-claude-integration.patch`
 
 ## License
 

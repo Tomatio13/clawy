@@ -3,11 +3,54 @@
 #include "sprites.h"
 
 // ============================================================
-// Display: 135x240 TFT, portrait orientation
+// Display: dynamic size (supports M5StickC Plus 2 and M5Stack Core series)
 // ============================================================
 
-#define SCREEN_W 135
-#define SCREEN_H 240
+#if defined(ARDUINO_M5STACK_CORE) || defined(ARDUINO_M5STACK_CORE2) || defined(ARDUINO_M5STACK_CORES3)
+#define CLAWY_PROFILE_CORE 1
+#else
+#define CLAWY_PROFILE_CORE 0
+#endif
+
+#define SCREEN_W ((int16_t)M5.Display.width())
+#define SCREEN_H ((int16_t)M5.Display.height())
+
+static inline int16_t layoutWidth() {
+#if CLAWY_PROFILE_CORE
+  int16_t w = SCREEN_W - 20;
+  if (w > 304) w = 304;
+  if (w < 240) w = SCREEN_W - 12;
+  return w;
+#else
+  int16_t w = SCREEN_W - 8;
+  if (w < 120) w = SCREEN_W;
+  if (w > 220) w = 220;
+  return w;
+#endif
+}
+
+static inline int16_t frameHeight() {
+#if CLAWY_PROFILE_CORE
+  int16_t h = 126;
+  if (h > SCREEN_H - 90) h = SCREEN_H - 90;
+  if (h < 98) h = 98;
+  return h;
+#else
+  int16_t h = SCREEN_H / 3;
+  if (h < 82) h = 82;
+  if (h > 110) h = 110;
+  return h;
+#endif
+}
+
+static inline int16_t textBoxHeight() {
+#if CLAWY_PROFILE_CORE
+  return 62;
+#else
+  int16_t h = (SCREEN_H >= 300) ? 48 : 40;
+  return h;
+#endif
+}
 
 // Layout zones (JRPG portrait + text window layout)
 #define HUD_Y       0
@@ -15,30 +58,64 @@
 #define DIVIDER_Y   17
 
 // Portrait frame area
-#define FRAME_X     4
+#define FRAME_X     ((SCREEN_W - FRAME_W) / 2)
+#if CLAWY_PROFILE_CORE
+#define FRAME_Y     26
+#else
 #define FRAME_Y     22
-#define FRAME_W     127
-#define FRAME_H     82
+#endif
+#define FRAME_W     (layoutWidth())
+#define FRAME_H     (frameHeight())
 
 // Character position (centered in portrait frame)
-#define CHAR_CX     67
-#define CHAR_CY     (FRAME_Y + 6 + SPRITE_H / 2)
-#define CHAR_X      (CHAR_CX - SPRITE_W / 2)
-#define CHAR_Y      (FRAME_Y + 6)
+#if CLAWY_PROFILE_CORE
+#define SPRITE_SCALE 2
+#else
+#define SPRITE_SCALE 1
+#endif
+#define CHAR_W      (SPRITE_W * SPRITE_SCALE)
+#define CHAR_H      (SPRITE_H * SPRITE_SCALE)
+#define CHAR_CX     (FRAME_X + FRAME_W / 2)
+#define CHAR_CY     (FRAME_Y + FRAME_H / 2)
+#define CHAR_X      (CHAR_CX - CHAR_W / 2)
+#define CHAR_Y      (CHAR_CY - CHAR_H / 2)
 
 // Text window area
-#define TBOX_X      4
-#define TBOX_Y      108
-#define TBOX_W      127
-#define TBOX_H      40
+#define TBOX_X      FRAME_X
+#define TBOX_Y      (FRAME_Y + FRAME_H + 4)
+#define TBOX_W      FRAME_W
+#define TBOX_H      (textBoxHeight())
 
 // Text positions inside text window
-#define STATUS_Y    120
-#define DETAIL_Y    138
+#if CLAWY_PROFILE_CORE
+#define STATUS_Y    (TBOX_Y + 23)
+#define DETAIL_Y    (TBOX_Y + 48)
+#else
+#define STATUS_Y    (TBOX_Y + 12)
+#define DETAIL_Y    (TBOX_Y + 30)
+#endif
 
 // Button bar
-#define BTN_Y       210
+#if CLAWY_PROFILE_CORE
+#define BTN_H       28
+#define BTN_Y       (SCREEN_H - BTN_H - 6)
+#else
 #define BTN_H       24
+#define BTN_Y       (SCREEN_H - BTN_H - 6)
+#endif
+
+static inline int16_t qscrollHeight() {
+  int16_t top = TBOX_Y + TBOX_H + 8;
+  int16_t h = BTN_Y - top - 4;
+#if CLAWY_PROFILE_CORE
+  if (h < 20) h = 20;
+  if (h > 40) h = 40;
+#else
+  if (h < 32) h = 32;
+  if (h > 72) h = 72;
+#endif
+  return h;
+}
 
 // ============================================================
 // Color palette (RGB565)
@@ -139,7 +216,13 @@ void drawSpriteTinted(M5Canvas& canvas, const uint8_t* bitmap, int16_t x, int16_
       int bitIdx = 7 - (col % 8);
       uint8_t b = pgm_read_byte(&bitmap[byteIdx]);
       if (b & (1 << bitIdx)) {
-        canvas.drawPixel(x + col, y + row, color);
+        int16_t px = x + col * SPRITE_SCALE;
+        int16_t py = y + row * SPRITE_SCALE;
+        if (SPRITE_SCALE == 1) {
+          canvas.drawPixel(px, py, color);
+        } else {
+          canvas.fillRect(px, py, SPRITE_SCALE, SPRITE_SCALE, color);
+        }
       }
     }
   }
@@ -286,7 +369,11 @@ void drawTextWindow(M5Canvas& canvas, uint16_t accent) {
 void drawStatusText(M5Canvas& canvas, const char* text, uint16_t color) {
   canvas.setTextColor(color);
   canvas.setTextSize(1);
+#if CLAWY_PROFILE_CORE
+  canvas.setFont(&fonts::FreeSansBold12pt7b);
+#else
   canvas.setFont(&fonts::Font2);
+#endif
   canvas.setTextDatum(middle_center);
   canvas.drawString(text, SCREEN_W / 2, STATUS_Y);
 }
@@ -294,7 +381,11 @@ void drawStatusText(M5Canvas& canvas, const char* text, uint16_t color) {
 void drawDetailText(M5Canvas& canvas, const char* text, uint16_t color) {
   canvas.setTextColor(color);
   canvas.setTextSize(1);
+#if CLAWY_PROFILE_CORE
+  canvas.setFont(&fonts::FreeSans9pt7b);
+#else
   canvas.setFont(&fonts::Font0);
+#endif
   canvas.setTextDatum(middle_center);
   canvas.drawString(text, SCREEN_W / 2, DETAIL_Y);
 }
@@ -304,7 +395,11 @@ void drawDetailText(M5Canvas& canvas, const char* text, uint16_t color) {
 // ============================================================
 
 void drawButtonBar(M5Canvas& canvas) {
-  int btnW = 58;
+#if CLAWY_PROFILE_CORE
+  int btnW = 90;
+#else
+  int btnW = (SCREEN_W >= 200) ? 68 : 58;
+#endif
   int gap = 5;
   int totalW = btnW * 2 + gap;
   int startX = (SCREEN_W - totalW) / 2;
@@ -318,7 +413,8 @@ void drawButtonBar(M5Canvas& canvas) {
 
   canvas.drawRoundRect(startX + btnW + gap, BTN_Y, btnW, BTN_H, 4, COL_RED);
   canvas.setTextColor(COL_RED);
-  canvas.drawString("B: Nope", startX + btnW + gap + btnW / 2, BTN_Y + BTN_H / 2);
+  const char* denyLabel = (SCREEN_W >= 200) ? "B/C: Nope" : "B: Nope";
+  canvas.drawString(denyLabel, startX + btnW + gap + btnW / 2, BTN_Y + BTN_H / 2);
 }
 
 // ============================================================
@@ -497,8 +593,8 @@ void drawSparkle(M5Canvas& canvas, int16_t x, int16_t y, uint16_t color) {
 }
 
 void drawSparkles(M5Canvas& canvas, uint8_t frame, uint16_t color) {
-  const int16_t sx[] = { CHAR_X - 6, CHAR_X + SPRITE_W + 4, CHAR_X + 12, CHAR_X + SPRITE_W - 8 };
-  const int16_t sy[] = { CHAR_Y + 12, CHAR_Y + 8, CHAR_Y - 4, CHAR_Y + SPRITE_H - 8 };
+  const int16_t sx[] = { CHAR_X - 6, CHAR_X + CHAR_W + 4, CHAR_X + 12, CHAR_X + CHAR_W - 8 };
+  const int16_t sy[] = { CHAR_Y + 12, CHAR_Y + 8, CHAR_Y - 4, CHAR_Y + CHAR_H - 8 };
   for (int i = 0; i < 4; i++) {
     if ((frame + i) % 3 != 0 && inFrame(sx[i], sy[i])) {
       drawSparkle(canvas, sx[i], sy[i], color);
@@ -521,7 +617,7 @@ void drawThoughtDots(M5Canvas& canvas, uint8_t frame, uint16_t color) {
 
 void drawDustPuffs(M5Canvas& canvas, uint8_t frame, uint16_t color) {
   int16_t baseX = CHAR_X - 4;
-  int16_t baseY = CHAR_Y + SPRITE_H - 8;
+  int16_t baseY = CHAR_Y + CHAR_H - 8;
   for (int i = 0; i < 3; i++) {
     int16_t x = baseX - (frame % 4) * 2 - i * 6;
     int16_t y = baseY + ((i + frame) % 3) - 1;
@@ -533,7 +629,7 @@ void drawDustPuffs(M5Canvas& canvas, uint8_t frame, uint16_t color) {
 }
 
 void drawBouncingQuestion(M5Canvas& canvas, uint8_t frame, uint16_t color) {
-  int16_t x = CHAR_X + SPRITE_W + 4;
+  int16_t x = CHAR_X + CHAR_W + 4;
   int bounce[] = {0, -2, -4, -5, -4, -2, 0, 1};
   int16_t y = CHAR_Y + 12 + bounce[frame % 8];
   if (inFrame(x, y)) {
@@ -546,7 +642,7 @@ void drawBouncingQuestion(M5Canvas& canvas, uint8_t frame, uint16_t color) {
 }
 
 void drawPulsingBang(M5Canvas& canvas, uint8_t frame, uint16_t color) {
-  int16_t x = CHAR_X + SPRITE_W + 4;
+  int16_t x = CHAR_X + CHAR_W + 4;
   int16_t y = CHAR_Y + 14;
   if ((frame % 4) < 2 && inFrame(x, y)) {
     canvas.setTextColor(color);
@@ -654,10 +750,10 @@ int drawWrappedText(M5Canvas& cv, const char* text, int16_t x, int16_t y,
 // ============================================================
 
 // Quest scroll layout
-#define QSCROLL_X     8
-#define QSCROLL_Y     152
-#define QSCROLL_W     119
-#define QSCROLL_H     53
+#define QSCROLL_X      (TBOX_X + 4)
+#define QSCROLL_Y      (TBOX_Y + TBOX_H + 8)
+#define QSCROLL_W      (TBOX_W - 8)
+#define QSCROLL_H      (qscrollHeight())
 #define QSCROLL_LINE_H  10
 #define QSCROLL_PAD      4
 #define QSCROLL_VISIBLE  ((QSCROLL_H - QSCROLL_PAD * 2) / QSCROLL_LINE_H)  // 4 lines
