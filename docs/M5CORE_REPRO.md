@@ -84,7 +84,7 @@ git apply --3way docs/patches/m5core-claude-integration.patch
 ```bash
 echo "<M5のIP>" > ~/.clawy/host
 # 例:
-echo "10.108.170.171" > ~/.clawy/host
+echo "192.168.4.2" > ~/.clawy/host
 ```
 
 hooks の解決優先順位:
@@ -98,7 +98,7 @@ hooks の解決優先順位:
 ```bash
 python3 - <<'PY'
 import socket
-host='10.108.170.171'  # 必要に応じて変更
+host='192.168.4.2'  # 必要に応じて変更
 for p in (7800,7801):
     try:
         s=socket.create_connection((host,p),timeout=2)
