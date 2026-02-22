@@ -1,5 +1,5 @@
 // Clawy — JRPG companion for Claude Code sessions
-// Animated pixel art fox/cat on M5StickC Plus 2 (135x240 color TFT)
+// Animated pixel art fox/cat on M5 devices (StickC Plus 2 / Core series)
 // Driven by Claude Code hooks over WiFi
 
 #define FIRMWARE_VERSION "0.1.1-beta"
@@ -20,9 +20,14 @@
 #define IDLE_SLEEP_MS 30000 // idle → sleeping after 30s
 #define BLINK_INTERVAL 4000 // blink every ~4 seconds
 
-#define DIM_TIMEOUT_MS   15000  // dim after 15s no state change
+#define DIM_TIMEOUT_MS   15000  // currently unused (auto-dim disabled)
+#if CLAWY_PROFILE_CORE
+#define BRIGHTNESS_ACTIVE 96
+#define BRIGHTNESS_DIM    60
+#else
 #define BRIGHTNESS_ACTIVE 80
-#define BRIGHTNESS_DIM    20
+#define BRIGHTNESS_DIM    45
+#endif
 
 // ============================================================
 // State
@@ -70,6 +75,12 @@ static uint8_t linePos = 0;
 static unsigned long lineLastByte = 0;
 
 static M5Canvas canvas(&M5.Display);
+static bool spriteReady = false;
+
+static inline bool sleepFeatureEnabled() {
+  // Core profile keeps full-bright idle to avoid apparent black-screen issues.
+  return !CLAWY_PROFILE_CORE;
+}
 
 // ============================================================
 // State helpers
@@ -95,10 +106,8 @@ int getBatteryPercent() {
 }
 
 void wakeDisplay() {
-  if (isDimmed) {
-    M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
-    isDimmed = false;
-  }
+  M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
+  isDimmed = false;
   lastStateChange = millis();
 }
 
@@ -206,6 +215,8 @@ void drawParticles(M5Canvas& cv, uint8_t f, uint16_t color) {
 // ============================================================
 
 void renderFrame() {
+  if (!spriteReady) return;
+
   uint16_t accent = isSleeping ? COL_DIM_GRAY : stateColor(currentStatus);
   int battPct = getBatteryPercent();
 
@@ -425,6 +436,11 @@ void processLine(const char* line) {
 // ============================================================
 
 void checkIdleProgression() {
+  if (!sleepFeatureEnabled()) {
+    isSleeping = false;
+    return;
+  }
+
   unsigned long elapsed = millis() - statusStart;
 
   // Blink trigger (READY only)
@@ -446,25 +462,49 @@ void checkIdleProgression() {
 // ============================================================
 
 void checkAutoDim() {
-  if (isDimmed) return;
-  if (millis() - lastStateChange >= DIM_TIMEOUT_MS) {
-    M5.Display.setBrightness(BRIGHTNESS_DIM);
-    isDimmed = true;
-  }
+  // Disabled on Core for now because dim/recover behavior is unstable on some units.
+  (void)DIM_TIMEOUT_MS;
+  (void)BRIGHTNESS_DIM;
 }
 
 // ============================================================
 // Button handling
 // ============================================================
 
+static inline bool wasSecondaryClicked() {
+  return M5.BtnB.wasClicked() || M5.BtnC.wasClicked();
+}
+
+static inline bool wasSecondaryHold() {
+  return M5.BtnB.wasHold() || M5.BtnC.wasHold();
+}
+
+static inline bool isSecondaryPressed() {
+  return M5.BtnB.isPressed() || M5.BtnC.isPressed();
+}
+
 void checkButtons() {
-  // Demo mode buttons: A advances, B exits
+  bool anyPressed = M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnC.isPressed();
+
+  // Wake on any physical button press, even before click/hold state updates settle.
+  if (anyPressed) {
+    bool wasSleeping = isSleeping;
+    wakeDisplay();
+    if (wasSleeping) {
+      isSleeping = false;
+      statusStart = millis();
+      frame = 0;
+      renderFrame();
+    }
+  }
+
+  // Demo mode buttons: A advances, secondary button (B/C) exits
   if (demoMode) {
     if (M5.BtnA.wasClicked()) {
       wakeDisplay();
       demoAdvance();
     }
-    if (M5.BtnB.wasClicked() || M5.BtnB.wasHold()) {
+    if (wasSecondaryClicked() || wasSecondaryHold()) {
       wakeDisplay();
       demoExit();
     }
@@ -481,15 +521,15 @@ void checkButtons() {
     return;
   }
 
-  // Button B long press: enter demo mode (except during APPROVE)
-  if (!isStatus("APPROVE") && M5.BtnB.wasHold()) {
+  // Secondary button long press: enter demo mode (except during APPROVE)
+  if (!isStatus("APPROVE") && wasSecondaryHold()) {
     wakeDisplay();
     demoEnter();
     return;
   }
 
-  // Button B click: deny (in APPROVE state) OR toggle stats
-  if (M5.BtnB.wasClicked()) {
+  // Secondary button click (B/C): deny (in APPROVE state) OR toggle stats
+  if (wasSecondaryClicked()) {
     wakeDisplay();
     if (isStatus("APPROVE")) {
       Serial.println("BUTTON:DENY");
@@ -520,21 +560,48 @@ void setup() {
 
   Serial.begin(115200);
 
-  // Button B hold threshold for demo mode entry
+  // Secondary buttons hold threshold for demo mode entry
   M5.BtnB.setHoldThresh(2000);
+  M5.BtnC.setHoldThresh(2000);
 
   // Display setup
-  M5.Display.setRotation(0);  // Portrait
+#if CLAWY_PROFILE_CORE
+  M5.Display.setRotation(1);  // Landscape for M5Core family
+#else
+  M5.Display.setRotation(0);  // Portrait for M5StickC Plus 2
+#endif
   M5.Display.fillScreen(COL_BLACK);
   M5.Display.setBrightness(BRIGHTNESS_ACTIVE);
 
   // Create full-screen sprite for flicker-free rendering
-  canvas.createSprite(SCREEN_W, SCREEN_H);
+  canvas.setColorDepth(16);
+  canvas.setPsram(true);
+  spriteReady = canvas.createSprite(SCREEN_W, SCREEN_H);
+
+  // Fallback for boards without PSRAM / tight heap
+  if (!spriteReady) {
+    canvas.setPsram(false);
+    canvas.setColorDepth(8);
+    spriteReady = canvas.createSprite(SCREEN_W, SCREEN_H);
+  }
+
   canvas.setSwapBytes(true);
 
-  // Check for WiFi reset: hold both buttons during boot
+  if (!spriteReady) {
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextColor(COL_RED);
+    M5.Display.setFont(&fonts::Font2);
+    M5.Display.drawString("Display init failed", SCREEN_W / 2, SCREEN_H / 2 - 8);
+    M5.Display.setTextColor(COL_HUD_GRAY);
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.drawString("Reboot device", SCREEN_W / 2, SCREEN_H / 2 + 10);
+    Serial.println("ERROR: sprite allocation failed");
+    return;
+  }
+
+  // Check for WiFi reset: hold A + secondary button during boot
   M5.update();
-  if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
+  if (M5.BtnA.isPressed() && isSecondaryPressed()) {
     nvsClearWiFiCreds();
     // Show reset message briefly
     canvas.fillSprite(COL_BLACK);
